@@ -80,5 +80,14 @@ _ = proxyServer
 
 - `StreamDirector`：按 `fullMethodName` 选择目标连接（出站 client 侧），并可返回新的 outgoing context。
 - `TransparentHandler`：生成可用于 `grpc.UnknownServiceHandler` 的透明代理 handler。
-- `RegisterService`：按服务名/方法名注册白名单代理（仅暴露指定方法）。
+- `RegisterService`：按服务名/方法名注册白名单代理（仅暴露指定方法）。与 UnknownServiceHandler 的“透明兜底转发”不同，白名单模式下未注册的方法会返回 `Unimplemented`，适合需要严格控制暴露面的网关/跳板。
 - `DefaultProxyServerOpt`：代理 server 必需的 codec 配置（确保请求按原始 protobuf bytes 转发）。
+
+## RPC 模式支持
+
+该代理以“统一的双向流”模型承载转发，但兼容 gRPC 的四种 RPC 模式：
+
+- 单-单（Unary）：转发 1 条请求 + 1 条响应
+- 单-流（Server Streaming）：转发 1 条请求 + N 条响应
+- 流-单（Client Streaming）：转发 N 条请求 + 1 条响应
+- 流-流（Bidirectional Streaming）：双向持续转发 N 条请求/响应
