@@ -39,7 +39,7 @@ type Handler struct {
 /*
 ** handle 是代理功能的核心所在，负责将请求转发到其他服务。
 ** 就像调用任何 gRPC 服务端流一样。
-** 使用 frame 类型作为载体，在输入流和输出流之间转发调用。
+** 使用 RawProtoFrame 类型作为载体，在输入流和输出流之间转发调用。
  */
 func (h *Handler) Handler(srv interface{}, serverStream grpc.ServerStream) error {
 	// 从 serverStream 提取完整方法名（形如 /package.Service/Method）。
@@ -117,7 +117,7 @@ func (h *Handler) ForwardOutboundToInbound(src grpc.ClientStream, dst grpc.Serve
 
 	go func() {
 		// f 作为复用容器，承载原始 protobuf bytes。
-		f := &frame{}
+		f := &RawProtoFrame{}
 
 		// i 用于在第一条消息到来时透传出站 header。
 		for i := 0; ; i++ {
@@ -160,7 +160,7 @@ func (h *Handler) ForwardInboundToOutbound(src grpc.ServerStream, dst grpc.Clien
 
 	go func() {
 		// f 作为复用容器，承载原始 protobuf bytes。
-		f := &frame{}
+		f := &RawProtoFrame{}
 
 		for {
 			// 从入站连接接收一条消息。

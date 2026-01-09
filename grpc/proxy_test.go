@@ -53,16 +53,16 @@ func (b *testTargetServer) handler(srv any, stream grpc.ServerStream) error {
 	}
 
 	// 接收代理转发来的第一条消息。
-	req := &frame{}
+	req := &RawProtoFrame{}
 	if err := stream.RecvMsg(req); err != nil {
 		return err
 	}
 
 	// 构造响应 payload：原样回显并追加 "::ok" 标记。
-	respPayload := append([]byte(nil), req.payload...)
+	respPayload := append([]byte(nil), req.Payload...)
 	respPayload = append(respPayload, []byte("::ok")...)
 	// 发送响应消息回代理。
-	if err := stream.SendMsg(&frame{payload: respPayload}); err != nil {
+	if err := stream.SendMsg(&RawProtoFrame{Payload: respPayload}); err != nil {
 		return err
 	}
 
@@ -71,13 +71,13 @@ func (b *testTargetServer) handler(srv any, stream grpc.ServerStream) error {
 	return nil
 }
 
-func startTargetServer(t *testing.T) (*grpc.Server, *bufconn.Listener, *testTargetServer) {
+func startTargetServer(tb testing.TB) (*grpc.Server, *bufconn.Listener, *testTargetServer) {
 	// 标记为 helper，失败时把行号归因到调用方。
-	t.Helper()
+	tb.Helper()
 
 	// 创建内存 listener，避免占用真实端口。
 	lis := bufconn.Listen(bufConnSize)
-	// 目标 server 强制使用 rawProtoCodec，确保能以 frame 方式收发原始 bytes。
+	// 目标 server 强制使用 RawProtoCodec，确保能以 RawProtoFrame 方式收发原始 bytes。
 	srv := grpc.NewServer(grpc.ForceServerCodec(RawProtoCodec{}))
 
 	// 构造目标服务实现，用于收集 metadata 并回显 payload。
@@ -102,7 +102,7 @@ func startTargetServer(t *testing.T) (*grpc.Server, *bufconn.Listener, *testTarg
 	}()
 
 	// 测试结束时停止 server 并关闭 listener。
-	t.Cleanup(func() {
+	tb.Cleanup(func() {
 		srv.Stop()
 		_ = lis.Close()
 	})
@@ -110,9 +110,9 @@ func startTargetServer(t *testing.T) (*grpc.Server, *bufconn.Listener, *testTarg
 	return srv, lis, targetServer
 }
 
-func startProxy(t *testing.T, targetConn *grpc.ClientConn) (*grpc.Server, *bufconn.Listener) {
+func startProxy(tb testing.TB, targetConn *grpc.ClientConn) (*grpc.Server, *bufconn.Listener) {
 	// 标记为 helper，失败时把行号归因到调用方。
-	t.Helper()
+	tb.Helper()
 
 	// 创建内存 listener，避免占用真实端口。
 	lis := bufconn.Listen(bufConnSize)
@@ -125,7 +125,7 @@ func startProxy(t *testing.T, targetConn *grpc.ClientConn) (*grpc.Server, *bufco
 	}()
 
 	// 测试结束时停止 server 并关闭 listener。
-	t.Cleanup(func() {
+	tb.Cleanup(func() {
 		srv.Stop()
 		_ = lis.Close()
 	})
@@ -169,7 +169,7 @@ func TestTransparentProxy_ForwardsPayloadAndMetadata(t *testing.T) {
 	}
 
 	// 发送一条消息到 proxy。
-	if err := stream.SendMsg(&frame{payload: []byte("ping")}); err != nil {
+	if err := stream.SendMsg(&RawProtoFrame{Payload: []byte("ping")}); err != nil {
 		t.Fatalf("send: %v", err)
 	}
 	// 关闭发送方向，触发目标服务端 handler 返回。
@@ -178,12 +178,12 @@ func TestTransparentProxy_ForwardsPayloadAndMetadata(t *testing.T) {
 	}
 
 	// 接收目标服务端经由 proxy 转发回来的响应。
-	resp := &frame{}
+	resp := &RawProtoFrame{}
 	if err := stream.RecvMsg(resp); err != nil {
 		t.Fatalf("recv: %v", err)
 	}
 	// 断言 payload 被正确透传并由目标服务端追加 "::ok"。
-	if got, want := string(resp.payload), "ping::ok"; got != want {
+	if got, want := string(resp.Payload), "ping::ok"; got != want {
 		t.Fatalf("payload mismatch: got %q want %q", got, want)
 	}
 
@@ -213,7 +213,7 @@ func TestRegisterService_AllowsOnlySpecifiedMethods(t *testing.T) {
 
 	// 启动一个仅注册白名单方法的 proxy server。
 	proxyLis := bufconn.Listen(bufConnSize)
-	// proxySrv 强制启用 server codec，确保能够以 frame 方式收发原始 bytes。
+	// proxySrv 强制启用 server codec，确保能够以 RawProtoFrame 方式收发原始 bytes。
 	proxySrv := grpc.NewServer(DefaultProxyServerOpt())
 	// 只注册 Echo 方法，不注册 Nope。
 	RegisterService(proxySrv, DefaultDirector(targetConn), "acme.demo.v1.DemoService", "Echo")
@@ -240,13 +240,13 @@ func TestRegisterService_AllowsOnlySpecifiedMethods(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new allowed stream: %v", err)
 	}
-	if err := allowedStream.SendMsg(&frame{payload: []byte("ping")}); err != nil {
+	if err := allowedStream.SendMsg(&RawProtoFrame{Payload: []byte("ping")}); err != nil {
 		t.Fatalf("allowed send: %v", err)
 	}
 	if err := allowedStream.CloseSend(); err != nil {
 		t.Fatalf("allowed close send: %v", err)
 	}
-	if err := allowedStream.RecvMsg(&frame{}); err != nil {
+	if err := allowedStream.RecvMsg(&RawProtoFrame{}); err != nil {
 		t.Fatalf("allowed recv: %v", err)
 	}
 
@@ -258,7 +258,7 @@ func TestRegisterService_AllowsOnlySpecifiedMethods(t *testing.T) {
 	// 关闭发送方向，触发服务端返回状态。
 	_ = deniedStream.CloseSend()
 	// 读取响应，此时应得到带 status 的 error。
-	err = deniedStream.RecvMsg(&frame{})
+	err = deniedStream.RecvMsg(&RawProtoFrame{})
 	// 断言 status code 为 Unimplemented（未注册方法）。
 	if status.Code(err) != codes.Unimplemented {
 		t.Fatalf("unexpected status code: %v (%v)", err, status.Code(err))
