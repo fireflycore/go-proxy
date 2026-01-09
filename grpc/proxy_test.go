@@ -2,7 +2,9 @@ package grpc
 
 import (
 	"context"
+	"io"
 	"net"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -262,5 +264,143 @@ func TestRegisterService_AllowsOnlySpecifiedMethods(t *testing.T) {
 	// 断言 status code 为 Unimplemented（未注册方法）。
 	if status.Code(err) != codes.Unimplemented {
 		t.Fatalf("unexpected status code: %v (%v)", err, status.Code(err))
+	}
+}
+
+func TestTransparentProxy_ClientCancelMapsToCanceled(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	t.Cleanup(cancel)
+
+	targetLis := bufconn.Listen(bufConnSize)
+	targetSrv := grpc.NewServer(grpc.ForceServerCodec(RawProtoCodec{}))
+
+	var targetReceivedFirst sync.WaitGroup
+	targetReceivedFirst.Add(1)
+
+	targetSrv.RegisterService(&grpc.ServiceDesc{
+		ServiceName: "acme.demo.v1.DemoService",
+		HandlerType: (*interface{})(nil),
+		Streams: []grpc.StreamDesc{
+			{
+				StreamName: "Hang",
+				Handler: func(srv any, stream grpc.ServerStream) error {
+					req := &RawProtoFrame{}
+					if err := stream.RecvMsg(req); err != nil {
+						return err
+					}
+
+					targetReceivedFirst.Done()
+
+					<-stream.Context().Done()
+					return stream.Context().Err()
+				},
+				ServerStreams: true,
+				ClientStreams: true,
+			},
+		},
+	}, struct{}{})
+
+	go func() { _ = targetSrv.Serve(targetLis) }()
+	t.Cleanup(func() {
+		targetSrv.Stop()
+		_ = targetLis.Close()
+	})
+
+	targetConn, err := dialBufConn(ctx, targetLis, grpc.WithDefaultCallOptions(DefaultClientCallOpts()...))
+	if err != nil {
+		t.Fatalf("dial target: %v", err)
+	}
+	t.Cleanup(func() { _ = targetConn.Close() })
+
+	_, proxyLis := startProxy(t, targetConn)
+
+	proxyConn, err := dialBufConn(ctx, proxyLis, grpc.WithDefaultCallOptions(DefaultClientCallOpts()...))
+	if err != nil {
+		t.Fatalf("dial proxy: %v", err)
+	}
+	t.Cleanup(func() { _ = proxyConn.Close() })
+
+	callCtx, callCancel := context.WithCancel(ctx)
+	stream, err := grpc.NewClientStream(callCtx, clientStreamDescForProxying, proxyConn, "/acme.demo.v1.DemoService/Hang", DefaultClientCallOpts()...)
+	if err != nil {
+		t.Fatalf("new client stream: %v", err)
+	}
+
+	if err := stream.SendMsg(&RawProtoFrame{Payload: []byte("ping")}); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+
+	targetReceivedFirst.Wait()
+	callCancel()
+
+	err = stream.RecvMsg(&RawProtoFrame{})
+	if status.Code(err) != codes.Canceled {
+		t.Fatalf("unexpected status code: %v (%v)", err, status.Code(err))
+	}
+}
+
+func TestTransparentProxy_ForwardsHeadersWithoutResponseMessages(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	t.Cleanup(cancel)
+
+	targetLis := bufconn.Listen(bufConnSize)
+	targetSrv := grpc.NewServer(grpc.ForceServerCodec(RawProtoCodec{}))
+
+	targetSrv.RegisterService(&grpc.ServiceDesc{
+		ServiceName: "acme.demo.v1.DemoService",
+		HandlerType: (*interface{})(nil),
+		Streams: []grpc.StreamDesc{
+			{
+				StreamName: "HeadersOnly",
+				Handler: func(srv any, stream grpc.ServerStream) error {
+					if err := stream.SendHeader(metadata.Pairs("x-target-header", "1")); err != nil {
+						return err
+					}
+					return nil
+				},
+				ServerStreams: true,
+				ClientStreams: true,
+			},
+		},
+	}, struct{}{})
+
+	go func() { _ = targetSrv.Serve(targetLis) }()
+	t.Cleanup(func() {
+		targetSrv.Stop()
+		_ = targetLis.Close()
+	})
+
+	targetConn, err := dialBufConn(ctx, targetLis, grpc.WithDefaultCallOptions(DefaultClientCallOpts()...))
+	if err != nil {
+		t.Fatalf("dial target: %v", err)
+	}
+	t.Cleanup(func() { _ = targetConn.Close() })
+
+	_, proxyLis := startProxy(t, targetConn)
+
+	proxyConn, err := dialBufConn(ctx, proxyLis, grpc.WithDefaultCallOptions(DefaultClientCallOpts()...))
+	if err != nil {
+		t.Fatalf("dial proxy: %v", err)
+	}
+	t.Cleanup(func() { _ = proxyConn.Close() })
+
+	stream, err := grpc.NewClientStream(ctx, clientStreamDescForProxying, proxyConn, "/acme.demo.v1.DemoService/HeadersOnly", DefaultClientCallOpts()...)
+	if err != nil {
+		t.Fatalf("new client stream: %v", err)
+	}
+
+	_ = stream.CloseSend()
+
+	h, err := stream.Header()
+	if err != nil {
+		t.Fatalf("header: %v", err)
+	}
+	if got := h.Get("x-target-header"); len(got) != 1 || got[0] != "1" {
+		t.Fatalf("header not forwarded: %v", h)
+	}
+
+	err = stream.RecvMsg(&RawProtoFrame{})
+	if err != io.EOF {
+		t.Fatalf("expected EOF, got: %v", err)
 	}
 }

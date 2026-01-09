@@ -99,10 +99,12 @@ func (h *Handler) Handler(srv interface{}, serverStream grpc.ServerStream) error
 
 			if outboundToInboundErr != io.EOF {
 				// 出站返回了非 EOF 错误，直接透传（保持 gRPC status 语义）。
+				clientCancel()
 				return outboundToInboundErr
 			}
 
 			// 出站正常结束。
+			clientCancel()
 			return nil
 		}
 	}
