@@ -5,7 +5,7 @@ import "google.golang.org/grpc"
 // RegisterService 注册代理服务
 func RegisterService(server *grpc.Server, director StreamDirector, serviceName string, methodNames ...string) {
 	// streamer 作为 service implementation 挂载在 server 上。
-	streamer := &Handler{director}
+	streamer := &Handler{director: director}
 
 	// fakeDesc 用于“伪造”一个服务描述，从而只暴露指定的方法列表。
 	fakeDesc := &grpc.ServiceDesc{
