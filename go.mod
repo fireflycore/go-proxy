@@ -1,4 +1,4 @@
-module github.com/lhdhtrc/proxy-go
+module github.com/fireflycore/go-proxy
 
 go 1.25.1
 
