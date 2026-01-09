@@ -2,6 +2,7 @@ package grpc
 
 import (
 	"context"
+	"errors"
 	"io"
 
 	"google.golang.org/grpc"
@@ -91,7 +92,7 @@ func (h *Handler) Handler(srv interface{}, serverStream grpc.ServerStream) error
 				// 入站转发失败：取消 clientCtx，尽快终止出站侧。
 				clientCancel()
 
-				return status.Errorf(codes.Internal, "failed proxying inbound to outbound: %v", inboundToOutboundErr)
+				return normalizeProxyError(inboundToOutboundErr)
 			}
 		case outboundToInboundErr := <-outboundToInboundErrChan:
 			// 将出站 trailer 透传到入站连接。
@@ -111,6 +112,22 @@ func (h *Handler) Handler(srv interface{}, serverStream grpc.ServerStream) error
 	return status.Errorf(codes.Internal, "gRPC proxying should never reach this stage.")
 }
 
+func normalizeProxyError(err error) error {
+	if err == nil {
+		return nil
+	}
+
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return status.FromContextError(err).Err()
+	}
+
+	if _, ok := status.FromError(err); ok {
+		return err
+	}
+
+	return status.Errorf(codes.Internal, "failed proxying inbound to outbound: %v", err)
+}
+
 func (h *Handler) ForwardOutboundToInbound(src grpc.ClientStream, dst grpc.ServerStream) chan error {
 	// ret 用于把 goroutine 内的最终结果送回主协程。
 	ret := make(chan error, 1)
@@ -120,14 +137,28 @@ func (h *Handler) ForwardOutboundToInbound(src grpc.ClientStream, dst grpc.Serve
 		f := &RawProtoFrame{}
 
 		// i 用于在第一条消息到来时透传出站 header。
+		headerSent := false
 		for i := 0; ; i++ {
 			// 从出站接收一条消息。
 			if err := src.RecvMsg(f); err != nil {
+				if !headerSent && i == 0 {
+					md, headerErr := src.Header()
+					if headerErr != nil {
+						ret <- headerErr
+						break
+					}
+
+					if sendHeaderErr := dst.SendHeader(md); sendHeaderErr != nil {
+						ret <- sendHeaderErr
+						break
+					}
+				}
+
 				ret <- err
 				break
 			}
 
-			if i == 0 {
+			if i == 0 && !headerSent {
 				// 这是一个有点取巧的做法，但客户端到服务器的头部信息只能在收到第一个客户端消息后才能读取，
 				// 但必须在刷新第一个消息之前写入服务器流。
 				// 这是唯一一个合适的地方来处理它。
@@ -141,6 +172,8 @@ func (h *Handler) ForwardOutboundToInbound(src grpc.ClientStream, dst grpc.Serve
 					ret <- err
 					break
 				}
+
+				headerSent = true
 			}
 
 			// 把出站消息转发回入站连接。
