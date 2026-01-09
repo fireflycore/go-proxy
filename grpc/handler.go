@@ -65,7 +65,6 @@ func (h *Handler) Handler(srv interface{}, serverStream grpc.ServerStream) error
 	clientCtx, clientCancel := context.WithCancel(outgoingCtx)
 	defer clientCancel()
 
-	// TODO(mwitkow): Add a `forwarded` header to metadata, https://en.wikipedia.org/wiki/X-Forwarded-For.
 	// 建立到目标 server 的出站 client stream，并强制使用代理 codec 以便按原始 bytes 转发。
 	clientStream, err := grpc.NewClientStream(clientCtx, clientStreamDescForProxying, targetConn, fullMethodName, DefaultClientCallOpts()...)
 	if err != nil {
