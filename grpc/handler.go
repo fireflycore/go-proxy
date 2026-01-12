@@ -37,11 +37,10 @@ type Handler struct {
 	director StreamDirector
 }
 
-/*
-** handle 是代理功能的核心所在，负责将请求转发到其他服务。
-** 就像调用任何 gRPC 服务端流一样。
-** 使用 RawProtoFrame 类型作为载体，在输入流和输出流之间转发调用。
- */
+// Handler 是代理功能的核心所在，负责将请求转发到其他服务。
+// 就像调用任何 gRPC 服务端流一样。
+// 使用 RawProtoFrame 类型作为载体，在输入流和输出流之间转发调用。
+// srv 参数是为了满足 grpc.StreamHandler 接口签名要求，在代理场景下不使用。
 func (h *Handler) Handler(srv interface{}, serverStream grpc.ServerStream) error {
 	// 从 serverStream 提取完整方法名（形如 /package.Service/Method）。
 	fullMethodName, ok := grpc.MethodFromServerStream(serverStream)

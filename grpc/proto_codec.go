@@ -6,11 +6,11 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// protoCodec 是最小可用的 proto 编解码实现，仅用于 fallback。
+// ProtoCodec 是最小可用的 proto 编解码实现，仅用于 fallback。
 type ProtoCodec struct{}
 
-// 名称保持为 "proto"，与 gRPC 默认 proto codec 语义一致。
 func (ProtoCodec) Name() string {
+	// 名称保持为 "proto"，与 gRPC 默认 proto codec 语义一致。
 	return "proto"
 }
 
